@@ -1,0 +1,73 @@
+name: Check CoCo on native ARM runners
+on:
+  push:
+    paths:
+      - 'packages/coco/**'
+      - 'packages/formatelf/**'
+      - 'packages/wrapBuddy/**'
+      - 'packages/versionCheckHomeHook/**'
+      - 'lib/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/check-coco.yml'
+  pull_request:
+    paths:
+      - 'packages/coco/**'
+      - 'packages/formatelf/**'
+      - 'packages/wrapBuddy/**'
+      - 'packages/versionCheckHomeHook/**'
+      - 'lib/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/check-coco.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: coco-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: CoCo (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+          - runner: macos-15
+            system: aarch64-darwin
+    env:
+      EXPECTED_NIX_SYSTEM: ${{ matrix.system }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v31
+      - name: Verify native architecture
+        run: |
+          test "$(nix eval --impure --raw --expr builtins.currentSystem)" = "$EXPECTED_NIX_SYSTEM"
+      - name: Build CoCo and run install checks
+        # Keep dependency caches, but build CoCo itself on this runner so its
+        # install checks execute even when the release has a cached output.
+        run: |
+          # This expression uses Nix interpolation, not shell expansion.
+          # shellcheck disable=SC2016
+          nix build --accept-flake-config --print-build-logs --impure --expr '
+            let flake = builtins.getFlake (toString ./.);
+            in flake.packages.${builtins.currentSystem}.coco.overrideAttrs (_: {
+              allowSubstitutes = false;
+            })
+          '
+      - name: Smoke test installed CLI
+        run: |
+          cocoHome=$(mktemp -d)
+          trap 'rm -rf "$cocoHome"' EXIT
+          export HOME="$cocoHome"
+          export XDG_CACHE_HOME="$cocoHome/cache"
+          ./result/bin/cortex --version
+          ./result/bin/cortex --help
